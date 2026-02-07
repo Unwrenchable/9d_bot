@@ -72,6 +72,7 @@ api_v1 = tweepy.API(auth_v1, wait_on_rate_limit=True)
 # SAFE POST TWEET - v2 + v1.1 fallback
 # ------------------------------------------------------------
 def safe_post_tweet(text, media_ids=None, in_reply_to_tweet_id=None):
+    global PAID_TIER, USE_LLM
     original_text = text
     if len(text) > TWITTER_CHAR_LIMIT:
         if in_reply_to_tweet_id:
@@ -91,7 +92,6 @@ def safe_post_tweet(text, media_ids=None, in_reply_to_tweet_id=None):
         err = str(e).lower()
         if "402" in err or "creditsdepleted" in err or "payment required" in err or "403" in err or "rate limit" in err:
             logging.warning(f"X API issue ({err}): switching to lite mode")
-            global PAID_TIER, USE_LLM
             PAID_TIER = False
             USE_LLM = False
         else:
@@ -261,6 +261,7 @@ Tone variations: competitive, friendly, glitchy, neutral, or mystical.
 """
 
 def generate_llm_response(prompt, max_tokens=100):
+    global USE_LLM
     if not USE_LLM or not HUGGING_FACE_TOKEN:
         logging.info("LLM skipped (no paid tier or no token)")
         return None
@@ -279,7 +280,6 @@ def generate_llm_response(prompt, max_tokens=100):
                 return generated[:200]
         elif r.status_code in [402, 429]:
             logging.warning(f"HF cost/rate issue: {r.status_code} - {r.text}")
-            global USE_LLM
             USE_LLM = False
         else:
             logging.error(f"HF error {r.status_code}: {r.text}")
@@ -473,16 +473,16 @@ def bot_respond():
             if any(word in ml for word in ['challenge', 'play me', 'vs', 'battle', '1v1', 'game me']):
                 resp = f"@{un} Challenge accepted! Head to {GAME_LINK} and start a game — tag me when you win (or lose 😏). Let's see your 9D skills!"
                 personality = random.choice(PERSONALITY_TONES['competitive'])
+                full_resp = f"{resp}\n\n{personality}"
 
             elif any(word in ml for word in ['won', 'i won', 'beat', 'victory']):
                 resp = f"@{un} You beat the grid? Respect! Post a screenshot or tell me the dimensions you conquered 🔥 {GAME_LINK}"
                 personality = random.choice(PERSONALITY_TONES['friendly'])
+                full_resp = f"{resp}\n\n{personality}"
 
             else:
-                resp = generate_contextual_response(un, umsg)
-                personality = get_personality_line()
-
-            full_resp = f"{resp}\n\n{personality}\n\n{GAME_LINK}"
+                # generate_contextual_response already includes GAME_LINK
+                full_resp = generate_contextual_response(un, umsg)
 
             if safe_post_tweet(full_resp, in_reply_to_tweet_id=m.id):
                 client.like(m.id)
@@ -537,10 +537,13 @@ def bot_diagnostic():
 # SCHEDULER + STARTUP
 # ------------------------------------------------------------
 scheduler = BackgroundScheduler()
-scheduler.add_job(bot_broadcast, 'interval', minutes=random.randint(BROADCAST_MIN_INTERVAL, BROADCAST_MAX_INTERVAL))
-scheduler.add_job(bot_respond, 'interval', minutes=random.randint(MENTION_CHECK_MIN_INTERVAL, MENTION_CHECK_MAX_INTERVAL))
+# Use average of min/max for consistent behavior
+BROADCAST_INTERVAL = (BROADCAST_MIN_INTERVAL + BROADCAST_MAX_INTERVAL) // 2
+MENTION_CHECK_INTERVAL = (MENTION_CHECK_MIN_INTERVAL + MENTION_CHECK_MAX_INTERVAL) // 2
+scheduler.add_job(bot_broadcast, 'interval', minutes=BROADCAST_INTERVAL)
+scheduler.add_job(bot_respond, 'interval', minutes=MENTION_CHECK_INTERVAL)
 scheduler.add_job(bot_retweet_hunt, 'interval', hours=1)
-scheduler.add_job(bot_hype_commentator, 'interval', minutes=random.randint(60, 180))
+scheduler.add_job(bot_hype_commentator, 'interval', minutes=120)  # 2 hours
 scheduler.add_job(bot_diagnostic, 'cron', hour=8)
 scheduler.start()
 
